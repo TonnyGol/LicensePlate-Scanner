@@ -1,0 +1,128 @@
+<html>
+	<head>
+		<script>
+		function validateForm() {
+		  var userID = document.forms["loginForm"]["user_ID"].value;
+		  var password = document.forms["loginForm"]["user_pass"].value;
+		  if (userID == "" || password == "" || password) {
+			alert("ID and password must be filled out");
+			return false;
+		  }
+		}
+		</script>
+		<title>Police Scanner</title>
+
+		<style>
+
+body{
+	margin:0;
+	padding:0;
+	background:linear-gradient(white, #D3D8E8);
+	font-family:Helvetica, Arial, sans-serif;
+
+}
+
+.header
+{
+	background-color:rgb(59, 89, 152);
+	height: 12.2%;
+	width:100%;
+	font-family:tahoma;
+	border: 1px solid darkblue;
+	
+	
+}
+
+.right
+{
+	width:45%;
+	position:absolute;
+	top:16%;
+	left:56%;
+	}
+	
+.left
+{	width:55%;
+	position:absolute;
+	left:0;
+}
+.center
+{	width:50%;
+	text-align: center;
+	position:absolute;
+	left:25%;
+}
+
+.image{
+	position:relative;
+	left:200px;
+
+	}
+.button {
+  background-color: #008CBA;
+  border: none;
+  color: white;
+  padding: 8px 18px;
+  transition-duration: 0.4s;
+  text-align: center;
+  text-decoration: none;
+  display: inline-block;
+  font-size: 16px;
+  border-radius: 8px;
+}
+.button:hover {
+  background-color: white; 
+  color: black; 
+  border: 2px solid #008CBA;
+}
+
+.input1[type=text]:focus {
+  border: 3px solid #555;
+}
+.input2[type=password]:focus {
+  border: 3px solid #555;
+}
+
+
+
+
+
+
+
+
+
+		</style>
+	</head>
+
+	
+<body>
+
+
+  <div class="header">
+   <span style="font-size: 45px; position:absolute; left:180px; color:white; top:3.5%;  "> <b> Police Scanner</b> </span> 
+  </div>
+	
+
+  <div class="center">
+	</br>
+	<span  style="color:rgb(14, 56, 95); font-size:20px; font-weight:700; width:300px;	word-spacing:-1;display:block; position:relative;  left:200px; margin:2%; ">AUTOMATIC NUMBER-PLATE RECOGNITION</span>
+	<form name="loginForm"  onsubmit="return validateForm()" action="#" method="post">
+		<div>
+			<p style="color:rgb(14, 56, 95)"; >ID:</p>
+			<input class = "input1" type="text" align="center" id="user_ID" name="user_ID">
+			</br>
+			<p style="color:rgb(14, 56, 95);">Password:</p>
+			<input class = "input2" type="password" align="user_pass" id="psw" name="user_pass">
+		</div>
+		</br style = "line-height:20px;">
+		<input type="submit" class="button" value="Login"/>
+	</form>
+		
+	</div>				
+	<br style = "line-height:270px;">
+	<img class="image" src="bgLogin.png"/>
+
+ </div>
+</body>
+
+</html>

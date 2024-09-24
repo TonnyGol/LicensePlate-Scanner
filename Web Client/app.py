@@ -85,7 +85,7 @@ def logout():
 
 
 if __name__ == "__main__":
-    os.system("start http://127.0.0.1:5000/login")
+    os.system("start http://127.0.0.1:5000/home")
     # webbrowser.open("http://127.0.0.1:5000/login")
     app.run(debug=False)
 

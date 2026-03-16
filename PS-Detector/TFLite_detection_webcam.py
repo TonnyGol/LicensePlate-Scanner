@@ -25,8 +25,13 @@ import sys
 import time
 from threading import Thread
 import importlib.util
+import ast
+import queue
 
 from pytesseract import pytesseract
+
+# Set the path to the Tesseract executable explicitly for Windows
+pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 
 # Define VideoStream class to handle streaming of video from webcam in separate processing thread
@@ -49,7 +54,7 @@ class VideoStream:
 
     def start(self):
         # Start the thread that reads frames from the video stream
-        Thread(target=self.update, args=()).start()
+        Thread(target=self.update, args=(), daemon=True).start()
         return self
 
     def update(self):
@@ -89,17 +94,11 @@ parser.add_argument('--edgetpu', help='Use Coral Edge TPU Accelerator to speed u
 
 args = parser.parse_args()
 
-lp2det = []
-lpCh = []
-
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 8900
 
 LISTEN_IP = "127.0.0.1"
 LISTEN_PORT = 8000
-
-Recognition_Request = {"Code": 200, "Data": "0"}
-Login_Request = {"Code": 100, "UserName": "", "PassWord": ""}
 
 MODEL_NAME = args.modeldir
 GRAPH_NAME = args.graph
@@ -129,7 +128,7 @@ if use_TPU:
         GRAPH_NAME = 'edgetpu.tflite'       
 
 # Get path to current working directory
-CWD_PATH = os.getcwd()
+CWD_PATH = os.path.dirname(os.path.abspath(__file__))
 
 # Path to .tflite file, which contains the model that is used for object detection
 PATH_TO_CKPT = os.path.join(CWD_PATH,MODEL_NAME,GRAPH_NAME)
@@ -178,75 +177,85 @@ if 'StatefulPartitionedCall' in outname: # This is a TF2 model
 else:  # This is a TF1 model
     boxes_idx, classes_idx, scores_idx = 0, 1, 2
 
-# Initialize frame rate calculation
-frame_rate_calc = 1
-freq = cv2.getTickFrequency()
 
-# Initialize video stream
-videostream = VideoStream(resolution=(imW,imH),framerate=30).start()
-time.sleep(1)
+# -----------------------------------------------------------------------------------------
+# QUEUE & CACHE FOR DETECTION RESULTS
+# -----------------------------------------------------------------------------------------
 
+plate_queue = queue.Queue()
+# Dictionary to store plate and the timestamp it was first seen recently
+lp_history = {} 
 
-def parse_output(number):
-    ans = ""
-    if len(number) == 7:
-        return number
-    elif len(number) == 8:
-        return number
-    elif len(number) > 8:
-        for ch in number:
-            if ch.isdigit():
-                ans += ch
-        return ans
-    elif len(number) == 6:
-        return "Not Rec"
-    return "Not Rec"
-
-# In[24]:
-def isJustDigit(number):
-    for dig in number:
-        if not dig.isdigit():
-            return False
-    return True
-
-def isLP(number):
-    if isJustDigit(number) and (len(number) == 8 or len(number) == 7):
-        return number
+def extract_plate_number(text):
+    """Extracts exactly 7 or 8 digits from the OCR text, filtering out noise."""
+    digits_only = ''.join(filter(str.isdigit, text))
+    if len(digits_only) == 7 or len(digits_only) == 8:
+        return digits_only
     return "Null"
 
 def image_ch(im_np):
-    # display(Image.fromarray(im_np))
-    config = "-l eng --psm 7"
-    retval, threshold = cv2.threshold(im_np, 102, 248, cv2.THRESH_BINARY)
-    # display(Image.fromarray(threshold))
-    gray = cv2.cvtColor(threshold, cv2.COLOR_BGR2GRAY)
-    # display(Image.fromarray(threshold))
-    blur = cv2.bilateralFilter(gray, 20, 80, 75)
-    # display(Image.fromarray(blur))
-    retval, threshold = cv2.threshold(blur, 100, 255, cv2.THRESH_BINARY)
-    # display(Image.fromarray(threshold))
-    text = pytesseract.image_to_string(threshold, config=config)
-    text = parse_output(text)
-    text = isLP(text)  # here we capture the numbers in the licence plate inside text.
-    # print(text)
-    if not text == "Null" and text not in lp2det and text not in lpCh:
-        lp2det.append(text)
-        print(lp2det)
-        print(lpCh)
+    # Enforce a whitelist of only numbers. Israeli plates are strictly 7-8 digits.
+    config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789'
+    
+    gray = cv2.cvtColor(im_np, cv2.COLOR_BGR2GRAY)
+    
+    # Resize image to 3x, making it easier for Tesseract to read from the webcam
+    resized = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    
+    # 1. First Attempt: Let Tesseract do its own automatic binarization on the resized grayscale image
+    raw_text_1 = pytesseract.image_to_string(resized, config=config).strip()
+    
+    # 2. Second Attempt: Otsu thresholding (automatically calculates optimal threshold for lighting)
+    _, thresh = cv2.threshold(resized, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    raw_text_2 = pytesseract.image_to_string(thresh, config=config).strip()
 
-def turnOnDetection():
-    thread = Thread(target=turnOnStreamDetection, args=())
-    thread.start()
+    candidates = [raw_text_1, raw_text_2]
+    best_raw = max(candidates, key=len) if any(candidates) else ""
+    found_plate = "Null"
+    
+    for raw in candidates:
+        plate = extract_plate_number(raw)
+        if plate != "Null":
+            found_plate = plate
+            best_raw = raw
+            break
+            
+    if plate != "Null":
+        current_time = time.time()
+        
+        # Clean up history: remove plates seen more than 2 minutes (120 seconds) ago
+        expired_plates = [p for p, t in lp_history.items() if current_time - t > 120]
+        for p in expired_plates:
+            del lp_history[p]
+            
+        # If plate is new or its 2 minute memory has expired
+        if plate not in lp_history:
+            lp_history[plate] = current_time
+            print(f"[Detector] Found New License Plate: {plate}")
+            plate_queue.put(plate)
+        else:
+            # We already saw this plate within the last 2 minutes, ignore it to prevent spam.
+            pass
 
 def turnOnStreamDetection():
-    # for frame1 in camera.capture_continuous(rawCapture, format="bgr",use_video_port=True):
-    frame_rate_calc = 0
+    # Initialize frame rate calculation
+    frame_rate_calc = 1
+    freq = cv2.getTickFrequency()
+    
+    # Initialize video stream
+    videostream = VideoStream(resolution=(imW,imH),framerate=30).start()
+    time.sleep(1)
+    
+    print("[Detector] Webcam started. Scanning for license plates...")
+
     while True:
         # Start timer (for calculating frame rate)
         t1 = cv2.getTickCount()
 
         # Grab frame from video stream
         frame1 = videostream.read()
+        if frame1 is None:
+            continue
 
         # Acquire frame and resize to expected shape [1xHxWx3]
         frame = frame1.copy()
@@ -271,15 +280,23 @@ def turnOnStreamDetection():
         for i in range(len(scores)):
             if ((scores[i] > min_conf_threshold) and (scores[i] <= 1.0)):
 
-                # Get bounding box coordinates and draw box
-                # Interpreter can return coordinates that are outside of image dimensions, need to force them to be within image using max() and min()
-                ymin = int(max(1,(boxes[i][0] * imH)))
-                xmin = int(max(1,(boxes[i][1] * imW)))
-                ymax = int(min(imH,(boxes[i][2] * imH)))
-                xmax = int(min(imW,(boxes[i][3] * imW)))
+                # Add 15px padding to prevent cutting off the edges!
+                pad = 15
+                ymin = int(max(1, (boxes[i][0] * imH) - pad))
+                xmin = int(max(1, (boxes[i][1] * imW) - pad))
+                ymax = int(min(imH, (boxes[i][2] * imH) + pad))
+                xmax = int(min(imW, (boxes[i][3] * imW) + pad))
 
                 cropped_lp = frame[ymin:ymax, xmin:xmax]
-                image_ch(cropped_lp)
+                
+                # Check that crop size is valid
+                if cropped_lp.size > 0:
+                    try:
+                        image_ch(cropped_lp)
+                    except Exception as e:
+                        print(f"[Detector] OCR error: {e}")
+                else:
+                    print("[Detector] Warning: Invalid crop size.")
 
                 cv2.rectangle(frame, (xmin,ymin), (xmax,ymax), (10, 255, 0), 2)
 
@@ -300,7 +317,7 @@ def turnOnStreamDetection():
         # Calculate framerate
         t2 = cv2.getTickCount()
         time1 = (t2-t1)/freq
-        frame_rate_calc = 1/time1
+        frame_rate_calc = 1/max(time1, 0.001)
 
         # Press 'q' to quit
         if cv2.waitKey(1) == ord('q'):
@@ -311,169 +328,131 @@ def turnOnStreamDetection():
     videostream.stop()
 
 
-def buildRequest():
-    new_msg = str(Recognition_Request)
-    new_msg = eval(new_msg)
-    if len(lp2det) > 0 and lp2det[0] not in lpCh:
-        temp = lp2det[0]
-        lpCh.append(temp)
-        lp2det.remove(temp)
-        new_msg["Data"] = temp
-    return new_msg
+# -----------------------------------------------------------------------------------------
+# NETWORK PROXY
+# -----------------------------------------------------------------------------------------
 
-
-def create_connect_socket():
-    # ( info about the function )
+def query_server(msg_dict):
+    """Sends a dictionary payload to the Server and returns its string response"""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    return sock
-
-
-def send_msg(msg, sock):
-    # ( info about the function )
-    msg_build = str(msg)
+    sock.settimeout(5.0) # wait up to 5 seconds for the DB server to reply
     server_address = (SERVER_IP, SERVER_PORT)
-    sock.sendto(msg_build.encode(), server_address)
-
-
-def get_msg(sock):
-    # ( info about the function )
     try:
-        server_msg, server_addr = sock.recvfrom(1024)
-        server_msg = server_msg.decode()
-        print(server_msg)
-        return server_msg
-    except:
-        print("ERR")
-        return "OK"
+        msg_str = str(msg_dict)
+        sock.sendto(msg_str.encode(), server_address)
+        
+        server_msg, _ = sock.recvfrom(1024)
+        return server_msg.decode()
+    except socket.timeout:
+        print("[Network] Server query timed out.")
+        return "Server Timeout"
+    except Exception as e:
+        print(f"[Network] Server query failed: {e}")
+        return "Server Error"
+    finally:
+        sock.close()
 
+latest_plate_result = None
+result_lock = threading.Lock()
 
-def close_connection(sock):
-    # ( info about the function )
-    sock.close()
+def server_verifier_thread():
+    """Runs in background: grabs plates, queries DB, and caches the string for Web Client to poll."""
+    global latest_plate_result
+    while True:
+        try:
+            detected_plate = plate_queue.get()
+            print(f"[Network] Verifying new plate {detected_plate} with Server Database...")
+            
+            req_dict = {"Code": 200, "Data": detected_plate}
+            server_response = query_server(req_dict)
+            
+            if "No detection in the database" in server_response:
+                final_msg = f"Detection: {detected_plate} - Not Found in Database"
+            else:
+                final_msg = f"WARNING! Stolen License Plate detected: {detected_plate}"
+                
+            print(f"[Network] Verification Complete. Storing message for Web Client: '{final_msg}'")
+                
+            with result_lock:
+                latest_plate_result = final_msg
+                
+        except Exception as e:
+            print(f"[Network] Verifier Error: {e}")
 
-
-def create_socket_for_app():
-    # ( Creates a Tcp connection so clients could connect to the server )
+def main_proxy():
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        server_address = (LISTEN_IP, LISTEN_PORT)
-        sock.bind(server_address)
-        print("Detection proxy started connection to get commands from app...")
-    except:
-        "An Error Happened"
-        return "CONNECTION ERROR"
-    else:
-        return sock
+        app_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        app_sock.bind((LISTEN_IP, LISTEN_PORT))
+        print(f"[Network] Proxy listening on {LISTEN_IP}:{LISTEN_PORT} for Web Client commands...")
+        app_sock.settimeout(1.0) # Enable timeout so the loop checks for CTRL+C periodically
+    except Exception as e:
+        print(f"[Network] Failed to bind Proxy port: {e}")
+        return
 
-
-def get_msg_from_app(client_soc):
-    # ( server receives msg from a client and his ip address )
     try:
-        client_msg, client_addr = client_soc.recvfrom(1024)
-        client_msg = client_msg.decode()
-        print(client_msg)
-        return client_msg, client_addr
-    except:
-        print("ERR")
-        return "OK"
+        while True:
+            try:
+                client_msg, client_addr = app_sock.recvfrom(1024)
+                msg_str = client_msg.decode()
+                
+                # Safe eval alternative using ast
+                try:
+                    app_dict = ast.literal_eval(msg_str)
+                except Exception:
+                    print(f"[Network] Invalid format from Web Client: {msg_str}")
+                    app_sock.sendto("Error: Invalid Message Format".encode(), client_addr)
+                    continue
+                
+                if not isinstance(app_dict, dict) or "Code" not in app_dict:
+                    continue
 
+                # ---------------------------------------------------------
+                # LOGIN REQUEST (Code: 100)
+                # Pass directly to Server -> Wait for Reply -> Send to Client
+                # ---------------------------------------------------------
+                if app_dict["Code"] == 100:
+                    print(f"[Network] Web Client requesting Validation Data: Proxying Login Request...")
+                    server_response = query_server(app_dict)
+                    app_sock.sendto(server_response.encode(), client_addr)
 
-def send_msg_to_app(sock, msg, client_addr):
-    # ( server sends a message to the client back )
-    msg_build = msg
-    sock.sendto(msg_build.encode(), client_addr)
-
-
-def close_socket_with_app(soc):
-    # ( closes the sock so no one could connect now and the server stops )
-    soc.close()
-
-
-# -----------------------------------------------------------
-def create_connect_socket_for_server():
-    # ( info about the function )
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    print("Connected to server with Data Base")
-    return sock
-
-
-def build_msg_to_server(number):
-    new_msg = Recognition_Request
-    new_msg["Data"] = number
-    return new_msg
-
-
-def send_msg_to_server(msg, sock):
-    # ( info about the function )
-    msg_build = str(msg)
-    server_address = (SERVER_IP, SERVER_PORT)
-    sock.sendto(msg_build.encode(), server_address)
-
-
-def get_msg_from_server(sock):
-    # ( info about the function )
-    try:
-        server_msg, server_addr = sock.recvfrom(1024)
-        server_msg = server_msg.decode()
-        print(server_msg)
-        return server_msg
-    except:
-        print("ERR")
-        return "OK"
-
-
-def close_connection_with_server(sock):
-    # ( info about the function )
-    sock.close()
-
-
-def checkNumber(serverMsg):
-    if serverMsg == "The number is not in the Data Base":
-        return False
-    return True
-
-
-def try2Login(server_sock, app_sock):
-    app_msg, app_addr = get_msg_from_app(app_sock)
-    app_msg = eval(app_msg)
-    send_msg_to_server(app_msg, server_sock)
-    srvMsg = get_msg_from_server(server_sock)
-    # app_msg, app_addr = get_msg_from_app(app_sock)
-    # send_msg(app_msg, server_sock)
-    # serverMsg = get_msg(server_sock)
-    if srvMsg == "Login Bad":
-        send_msg_to_app(app_sock, "Bad", app_addr)
-        return True
-    else:
-        send_msg_to_app(app_sock, "OK", app_addr)
-        return False
-
-
-def doLogin(server_sock, app_sock):
-    while try2Login(server_sock, app_sock):
-        print("Bad login - wait for new login")
-
+                # ---------------------------------------------------------
+                # DETECTION REQUEST (Code: 200)
+                # Client polls for detection status. Reply instantly.
+                # ---------------------------------------------------------
+                elif app_dict["Code"] == 200:
+                    global latest_plate_result
+                    with result_lock:
+                        if latest_plate_result:
+                            app_sock.sendto(latest_plate_result.encode(), client_addr)
+                            latest_plate_result = None # Clear after notifying client once
+                        else:
+                            app_sock.sendto("No detection".encode(), client_addr)
+                    
+            except socket.timeout:
+                # 1 second passed without messages. Yield and continue.
+                continue
+            except Exception as e:
+                print(f"[Network] Error in proxy loop: {e}")
+    except KeyboardInterrupt:
+        print("\n[System] CTRL+C detected. Terminating Proxy Server...")
+    finally:
+        app_sock.close()
 
 def main():
-    turnOnDetection()
-    app_sock = create_socket_for_app()
-    server_sock = create_connect_socket_for_server()
-    while True:
-        msgSend = ""
-        app_msg, app_addr = get_msg_from_app(app_sock)
-        app_msg = eval(app_msg)
-        if app_msg["Code"] == 100:
-            msgSend = app_msg
-        if app_msg["Code"] == 200:
-            msgSend = buildRequest()
-
-        send_msg_to_server(msgSend, server_sock)
-        serverMsg = get_msg_from_server(server_sock)
-        send_msg_to_app(app_sock, serverMsg, app_addr)
-
-    # close_socket_with_app(app_sock)
-    # close_connection_with_server(server_sock)
-
+    # Start Webcam processing in a background thread
+    det_thread = Thread(target=turnOnStreamDetection, daemon=True)
+    det_thread.start()
+    
+    # Start the DB Server Verifier in a background thread
+    ver_thread = Thread(target=server_verifier_thread, daemon=True)
+    ver_thread.start()
+    
+    # Run Network Proxy in main thread
+    main_proxy()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n[System] CTRL+C manually triggered globally. Shutting down PS-Detector...")
+        sys.exit(0)

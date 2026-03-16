@@ -1,56 +1,121 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
+
 <head>
-<meta http-equiv="refresh" content="5">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-div
-{
-	text-align: center;
-}​
-background
-{
-	background-image: url({{ url_for('static', filename='images/road2.jpg') }});
-	background-repeat: no-repeat;
-	background-attachment: fixed;
-	background-size: 100% 100%;
-}
-input[type=submit]
-{
-  background-color: #09F6BB;
-  border: none;
-  color: black;
-  padding: 16px 32px;
-  text-decoration: none;
-  margin: 4px 2px;
-  cursor: pointer;
-}
-</style>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ANPR | Detection Dashboard</title>
+	<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body style="background-image: url({{ url_for('static', filename='images/road2.jpg') }});
-background-repeat: no-repeat;
-background-size: 100% 100%;
-background-attachment: fixed;">
 
-<div>
-	<h2>Pop up messages Page</h2>
-</div>
+<body>
 
-<div>
-	{% with messages = get_flashed_messages() %}
-		{% if messages %}
-			{% for msg in messages %}
-				<h3>{{msg}}</h3>
+	<div class="bg-wrapper" style="background-image: url('{{ url_for('static', filename='images/road2.jpg') }}');">
+		<div class="bg-overlay"></div>
+	</div>
+
+	<div class="dashboard-container">
+		<div
+			style="display: flex; align-items: center; justify-content: center; gap: 1.5rem; margin-bottom: 2rem; background: rgba(0,0,0,0.2); padding: 1.5rem; border-radius: 16px; border: 1px solid var(--glass-border);">
+			<img src="{{ url_for('static', filename='images/policeMan.png') }}" class="avatar" alt="Officer Avatar"
+				style="width: 90px; height: 90px; margin: 0; box-shadow: 0 4px 15px rgba(9, 246, 187, 0.3);">
+			<div>
+				<h1 style="margin-bottom: 0.5rem; text-align: left; font-size: 2rem;">Live Detection Feed</h1>
+				<h2 style="margin: 0; text-align: left; font-size: 1.1rem; color: var(--primary);">Active Officer
+					Session</h2>
+			</div>
+		</div>
+
+		<div class="flash-container">
+			{% with messages = get_flashed_messages(with_categories=true) %}
+			{% if messages %}
+			{% for category, msg in messages %}
+			<div class="alert {{ category }}">{{ msg }}</div>
 			{% endfor %}
-		{% endif %}
-	{% endwith %}
-</div>
+			{% endif %}
+			{% endwith %}
+		</div>
 
-<form action="#" method="post">
-<div>
-	<input type="submit" value="Logout"/>
-</div>
-</form>
+		<div id="status-display" class="status-card active">
+			<h3 style="color: var(--text-muted); text-transform: uppercase;">Latest Detection</h3>
+			<div id="plate-text" class="plate-number">NO DETECTION</div>
+			<p id="status-description" style="color: var(--text-muted); margin-top: 1rem;">Scanning for license
+				plates...</p>
+		</div>
+
+		<form action="/user_logout" method="post"
+			style="margin-top: 3rem; max-width: 300px; margin-left: auto; margin-right: auto;">
+			<button type="submit" class="btn"
+				style="background-color: transparent; border: 1px solid var(--danger); color: var(--danger);">Secure
+				Logout</button>
+		</form>
+	</div>
+
+	<script>
+		let warningTimeout = null;
+		let isWarningActive = false;
+
+		function resetDashboard() {
+			const statusCard = document.getElementById('status-display');
+			const plateText = document.getElementById('plate-text');
+			const statusDesc = document.getElementById('status-description');
+
+			statusCard.className = 'status-card active';
+			plateText.innerText = 'NO DETECTION';
+			statusDesc.innerText = 'Scanning for license plates...';
+			statusDesc.style.color = 'var(--text-muted)';
+
+			isWarningActive = false;
+		}
+
+		function updateDashboard() {
+			fetch('/api/status')
+				.then(response => response.json())
+				.then(data => {
+					const statusCard = document.getElementById('status-display');
+					const plateText = document.getElementById('plate-text');
+					const statusDesc = document.getElementById('status-description');
+
+					if (data.status && data.status.toLowerCase().includes('stolen')) {
+						// Trigger the warning state
+						statusCard.className = 'status-card stolen jumping';
+						plateText.innerText = data.status.replace(/stolen/gi, '').replace(/warning!/gi, '').replace(/license plate detected:/gi, '').trim() || 'UNKNOWN PLATE';
+						statusDesc.innerText = 'WARNING: STOLEN VEHICLE DETECTED!';
+						statusDesc.style.color = '#fca5a5';
+
+						isWarningActive = true;
+
+						// Clear any existing timeout so the 15 seconds restarts if the server sends it again
+						if (warningTimeout) clearTimeout(warningTimeout);
+
+						// Hold the message for 15 seconds before resetting
+						warningTimeout = setTimeout(() => {
+							resetDashboard();
+						}, 15000);
+
+					} else if (!isWarningActive) {
+						// Only update benign statuses if a warning isn't currently hogging the screen
+						if (data.status && data.status.toLowerCase().includes('no detection')) {
+							statusCard.className = 'status-card active';
+							plateText.innerText = 'NO DETECTION';
+							statusDesc.innerText = 'Scanning for license plates...';
+							statusDesc.style.color = 'var(--text-muted)';
+						} else {
+							// Some other detection/message that is not stolen
+							statusCard.className = 'status-card active';
+							plateText.innerText = data.status.replace(/detection:/gi, '').replace(/- not found in database/gi, '').trim() || 'NO DATA';
+							statusDesc.innerText = 'Vehicle logged - Not in Database.';
+							statusDesc.style.color = 'var(--text-muted)';
+						}
+					}
+				})
+				.catch(err => console.error("Error fetching status:", err));
+		}
+
+		// Poll every 2 seconds
+		setInterval(updateDashboard, 2000);
+	</script>
 
 </body>
+
 </html>

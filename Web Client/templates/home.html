@@ -1,40 +1,33 @@
 <!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<head>
-<title>Home page</title>
-<style>
-input[type=submit]
-{
-  background-color: #09F6BB;
-  border: none;
-  color: black;
-  padding: 16px 32px;
-  text-decoration: none;
-  margin: 4px 2px;
-  cursor: pointer;
-}
-div
-{
-    text-align: center;
-}​
-</style>
-</head>
-<body style="background-image: url({{ url_for('static', filename='images/home2.png') }});
-background-repeat: no-repeat;
-background-size: 100% 100%;
-background-attachment: fixed;">
+<html lang="en">
 
-<div>
-	<h1 style="color:white;">AUTOMATIC NUMBER</h1>
-	<h1 style="color:white;">PLATE RECOGNITION</h1>
-	<form action="#" method="post">
-		<div>
-			<input type="submit" value="Go to login page"/>
-		</div>
-	</form>
-</div>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ANPR | Secure Access</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+
+  <div class="bg-wrapper" style="background-image: url('{{ url_for('static', filename='images/home2.png') }}');">
+    <div class="bg-overlay"></div>
+  </div>
+
+  <div class="dashboard-container" style="max-width: 600px;">
+    <!-- Added logo/avatar to make the page look richer -->
+    <img src="{{ url_for('static', filename='images/policeMan.png') }}" class="avatar" alt="System Logo"
+      style="width: 140px; height: 140px; margin-bottom: 2rem;">
+
+    <h1>AUTOMATIC NUMBER</h1>
+    <h1>PLATE RECOGNITION</h1>
+    <h2 style="margin-top: 1rem; color: var(--primary);">Intelligent Security System</h2>
+
+    <form action="#" method="post" style="margin-top: 2rem;">
+      <button type="submit" class="btn">Access System Interface</button>
+    </form>
+  </div>
 
 </body>
+
 </html>

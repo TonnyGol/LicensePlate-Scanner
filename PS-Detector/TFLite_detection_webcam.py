@@ -30,8 +30,8 @@ import queue
 
 from pytesseract import pytesseract
 
-# Set the path to the Tesseract executable explicitly for Windows
 pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    
 
 
 # Define VideoStream class to handle streaming of video from webcam in separate processing thread
